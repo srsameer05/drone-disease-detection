@@ -3,21 +3,10 @@
    ══════════════════════════════════════════ */
 
 const API = '/api';
-const DISEASE_COLORS = {
-    healthy: '#10b981',
-    leaf_blight: '#ef4444',
-    leaf_spot: '#f59e0b',
-    rust: '#d97706',
-    powdery_mildew: '#8b5cf6',
-};
-
-const DISEASE_LABELS = {
-    healthy: 'Healthy',
-    leaf_blight: 'Leaf Blight',
-    leaf_spot: 'Leaf Spot',
-    rust: 'Rust',
-    powdery_mildew: 'Powdery Mildew',
-};
+const CARTO_API_KEY = 'cb1_3uub_1_02c503dacb2fec94d14c7576';
+const DISEASE_COLORS = {};
+const DISEASE_LABELS = {};
+const COLOR_PALETTE = ['#ef4444', '#f59e0b', '#d97706', '#8b5cf6', '#3b82f6', '#ec4899', '#14b8a6', '#f43f5e', '#84cc16', '#a855f7', '#06b6d4', '#eab308', '#f97316', '#10b981', '#3f6212', '#6366f1', '#d946ef', '#f472b6', '#cbd5e1'];
 
 // ── Global State ──
 let map;
@@ -59,11 +48,111 @@ document.addEventListener('DOMContentLoaded', () => {
     initMap();
     initTabs();
     initLayerToggles();
-    initLegendFilter();
     initWebSocket();
-    loadAllData();
-    setInterval(loadStats, 15000);
+    
+    loadClasses().then(() => {
+        loadAllData();
+        setInterval(loadStats, 15000);
+        setInterval(pollTelemetry, 1000);
+    });
+
+    // Live confidence slider update
+    const confSlider = document.getElementById('uploadConf');
+    const confValue = document.getElementById('uploadConfValue');
+    if (confSlider && confValue) {
+        confSlider.addEventListener('input', () => {
+            confValue.textContent = parseFloat(confSlider.value).toFixed(2);
+        });
+    }
 });
+
+async function loadClasses() {
+    try {
+        const classesObj = await fetch(`${API}/classes`).then(r => r.json());
+        const classNames = Object.values(classesObj);
+        
+        let colorIdx = 0;
+        classNames.forEach(c => {
+            if (c.toLowerCase() === 'healthy') {
+                DISEASE_COLORS[c] = '#10b981';
+            } else {
+                DISEASE_COLORS[c] = COLOR_PALETTE[colorIdx % COLOR_PALETTE.length];
+                colorIdx++;
+            }
+            DISEASE_LABELS[c] = c.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        });
+
+        const filterSel = document.getElementById('detFilterDisease');
+        if (filterSel) {
+            classNames.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c;
+                opt.textContent = DISEASE_LABELS[c];
+                filterSel.appendChild(opt);
+            });
+        }
+
+        const legendList = document.getElementById('dynamicLegendList');
+        if (legendList) {
+            const order = Object.keys(DISEASE_LABELS).sort((a,b) => a==='healthy'? 1 : b==='healthy'? -1 : a.localeCompare(b));
+            order.forEach(c => {
+                const div = document.createElement('div');
+                div.className = 'legend-item';
+                div.dataset.disease = c;
+                div.innerHTML = `
+                    <span class="legend-dot" style="background-color: ${DISEASE_COLORS[c]}"></span>
+                    ${DISEASE_LABELS[c]}
+                    <span class="legend-count" id="legend-count-${c}">0</span>
+                `;
+                legendList.appendChild(div);
+            });
+            initLegendFilter();
+        }
+    } catch (e) {
+        console.error('Failed to load classes', e);
+    }
+}
+
+async function pollTelemetry() {
+    try {
+        const res = await fetch('/api/telemetry');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        // Update connection modal & header UI
+        const statusEl = document.getElementById('dcCurrentStatus');
+        const btn = document.getElementById('dcConnectBtn');
+        const scoutDot = document.getElementById('scoutDot');
+        
+        if (data.connected) {
+            if (statusEl) {
+                statusEl.textContent = 'Connected';
+                statusEl.classList.add('success');
+            }
+            if (btn) {
+                btn.textContent = 'Connected';
+                btn.disabled = true;
+            }
+            if (scoutDot) {
+                scoutDot.classList.add('connected');
+                scoutDot.classList.remove('offline');
+            }
+        } else {
+            if (statusEl) {
+                statusEl.textContent = 'Connecting...';
+                statusEl.classList.remove('success');
+            }
+            if (btn) {
+                btn.textContent = 'Connecting...';
+                btn.disabled = false;
+            }
+            if (scoutDot) {
+                scoutDot.classList.remove('connected');
+                scoutDot.classList.add('offline');
+            }
+        }
+    } catch(e) {}
+}
 
 // ══════════════════════════════════════════
 // MAP
@@ -78,7 +167,11 @@ function initMap() {
 
     L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    const tileUrl = CARTO_API_KEY
+        ? `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CARTO_API_KEY}`
+        : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+
+    L.tileLayer(tileUrl, {
         attribution: '&copy; OSM &copy; CARTO',
         maxZoom: 20,
     }).addTo(map);
@@ -479,6 +572,9 @@ function updateDroneMarker(lat, lon, heading, type) {
             interactive: false,
             keyboard: false,
         }).addTo(map);
+        
+        // Auto-center the map on the drone's first known location
+        map.setView([lat, lon], 18);
 
         // Snap on first frame — no interpolation source yet
         _droneCurrent.lat = lat; _droneCurrent.lon = lon; _droneCurrent.heading = heading || 0;
@@ -646,15 +742,15 @@ async function loadStats() {
 function renderDistChart(dist) {
     const container = document.getElementById('distChart');
     const total = Object.values(dist).reduce((a, b) => a + b, 0) || 1;
-    const order = ['leaf_blight', 'leaf_spot', 'rust', 'powdery_mildew', 'healthy'];
+    const order = Object.keys(DISEASE_LABELS).sort((a,b) => a==='healthy'? 1 : b==='healthy'? -1 : a.localeCompare(b));
     container.innerHTML = order.map(d => {
         const count = dist[d] || 0;
         const pct = (count / total) * 100;
         return `
             <div class="dist-row">
-                <div class="dist-label">${DISEASE_LABELS[d]}</div>
+                <div class="dist-label">${DISEASE_LABELS[d] || d}</div>
                 <div class="dist-bar">
-                    <div class="dist-bar-fill" style="width: ${pct}%; background: ${DISEASE_COLORS[d]};"></div>
+                    <div class="dist-bar-fill" style="width: ${pct}%; background: ${DISEASE_COLORS[d] || '#64748b'};"></div>
                 </div>
                 <div class="dist-count">${count}</div>
             </div>
@@ -715,7 +811,7 @@ function renderDetections() {
         card.innerHTML = `
             <div class="detection-header">
                 <div class="detection-disease">
-                    <span class="legend-dot ${det.class_name}"></span>
+                    <span class="legend-dot" style="background-color: ${DISEASE_COLORS[det.class_name] || '#64748b'}"></span>
                     ${DISEASE_LABELS[det.class_name] || det.class_name}
                 </div>
                 <span class="detection-conf ${confClass}">${(det.confidence * 100).toFixed(1)}%</span>
@@ -1359,7 +1455,31 @@ async function rejectZone(zoneId) {
 }
 
 async function seedDemoData() {
-    toast('Seeding demo data...', 'info');
+    toast('Running ML inference on test images...', 'info');
+    try {
+        const res = await fetch(`${API}/demo/detect`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json();
+            toast(`Demo failed: ${err.detail || res.statusText}`, 'error');
+            return;
+        }
+        const data = await res.json();
+        toast(`ML Demo: ${data.total_detections} detections from ${data.images_processed} images, ${data.spray_zones_created} spray zones`, 'success');
+        await loadAllData();
+        setTimeout(() => map.flyTo([12.9716, 77.5946], 15, { duration: 1.2 }), 300);
+    } catch(e) {
+        console.error('seedDemoData:', e);
+        toast('ML inference failed — falling back to random demo', 'error');
+        // Fallback to random demo data
+        await fetch(`${API}/demo/seed`, { method: 'POST' });
+        toast('Random demo data loaded', 'success');
+        await loadAllData();
+        setTimeout(() => map.flyTo([12.9716, 77.5946], 15, { duration: 1.2 }), 300);
+    }
+}
+
+async function seedRandomDemo() {
+    toast('Seeding random demo data...', 'info');
     await fetch(`${API}/demo/seed`, { method: 'POST' });
     toast('Demo data loaded', 'success');
     await loadAllData();
@@ -1656,32 +1776,7 @@ function closeDroneConnect() {
 }
 
 async function refreshDroneStatus() {
-    try {
-        const status = await fetch(`${API}/drone/status`).then(r => r.json());
-        const connected = currentDroneType === 'scout' ? status.scout_connected : status.treatment_connected;
-        const conn = currentDroneType === 'scout' ? status.scout_connection : status.treatment_connection;
-
-        const statusEl = document.getElementById('dcCurrentStatus');
-        if (connected) {
-            statusEl.textContent = `Connected: ${conn}`;
-            statusEl.classList.add('success');
-            document.getElementById('dcConnectBtn').textContent = 'Reconnect';
-            document.getElementById('dcDisconnectBtn').style.display = '';
-        } else {
-            statusEl.textContent = 'Not connected';
-            statusEl.classList.remove('success');
-            document.getElementById('dcConnectBtn').textContent = 'Connect';
-            document.getElementById('dcDisconnectBtn').style.display = 'none';
-        }
-
-        // Update header dots
-        document.getElementById('scoutDot').classList.toggle('connected', status.scout_connected);
-        document.getElementById('scoutDot').classList.toggle('offline', !status.scout_connected);
-        document.getElementById('treatDot').classList.toggle('connected', status.treatment_connected);
-        document.getElementById('treatDot').classList.toggle('offline', !status.treatment_connected);
-    } catch(e) {
-        console.error('refreshDroneStatus:', e);
-    }
+    // Status is now handled entirely by pollTelemetry every 1 second
 }
 
 async function droneConnect() {
@@ -1693,24 +1788,17 @@ async function droneConnect() {
     const btn = document.getElementById('dcConnectBtn');
     btn.disabled = true;
     btn.textContent = 'Connecting...';
+    
     try {
-        const res = await fetch(`${API}/drone/connect`, {
+        await fetch(`${API}/drone/connect`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ drone_type: currentDroneType, connection: conn }),
         });
-        if (!res.ok) {
-            const err = await res.json();
-            toast(`Connect failed: ${err.detail || res.statusText}`, 'error');
-        } else {
-            toast(`${currentDroneType} drone connected`, 'success');
-            await refreshDroneStatus();
-        }
     } catch(e) {
-        toast('Connection error', 'error');
-        console.error(e);
-    } finally {
+        toast('API Error', 'error');
         btn.disabled = false;
+        btn.textContent = 'Connect';
     }
 }
 
@@ -1718,10 +1806,7 @@ async function droneDisconnect() {
     try {
         await fetch(`${API}/drone/disconnect/${currentDroneType}`, { method: 'POST' });
         toast(`${currentDroneType} drone disconnected`, 'info');
-        await refreshDroneStatus();
-    } catch(e) {
-        toast('Disconnect failed', 'error');
-    }
+    } catch(e) {}
 }
 
 // Refresh drone status on page load
@@ -1733,5 +1818,468 @@ document.addEventListener('keydown', (e) => {
         closeWizard();
         closeMissionDetail();
         closeDroneConnect();
+        closeUploadModal();
+        closeStreamModal();
     }
 });
+
+// ════════════════════════════════════════════
+// IMAGE UPLOAD & DETECTION
+// ════════════════════════════════════════════
+
+function openUploadModal() {
+    document.getElementById('uploadModal').classList.add('visible');
+    document.getElementById('uploadResults').innerHTML = '';
+    document.getElementById('uploadFileInput').value = '';
+    document.getElementById('uploadPreview').innerHTML = '';
+    document.getElementById('uploadBtn').disabled = true;
+}
+
+function closeUploadModal() {
+    document.getElementById('uploadModal').classList.remove('visible');
+}
+
+function handleUploadPreview() {
+    const input = document.getElementById('uploadFileInput');
+    const preview = document.getElementById('uploadPreview');
+    const btn = document.getElementById('uploadBtn');
+    preview.innerHTML = '';
+
+    if (input.files.length === 0) {
+        btn.disabled = true;
+        return;
+    }
+
+    btn.disabled = false;
+    const count = Math.min(input.files.length, 6);
+    for (let i = 0; i < count; i++) {
+        const file = input.files[i];
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.className = 'upload-thumb';
+            img.title = file.name;
+            preview.appendChild(img);
+        };
+        reader.readAsDataURL(file);
+    }
+    if (input.files.length > 6) {
+        const more = document.createElement('div');
+        more.className = 'upload-thumb-more';
+        more.textContent = `+${input.files.length - 6} more`;
+        preview.appendChild(more);
+    }
+}
+
+async function uploadAndDetect() {
+    const input = document.getElementById('uploadFileInput');
+    const conf = parseFloat(document.getElementById('uploadConf').value) || 0.4;
+    const resultsEl = document.getElementById('uploadResults');
+    const btn = document.getElementById('uploadBtn');
+
+    if (input.files.length === 0) {
+        toast('Select an image or video first', 'error');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Detecting...';
+    resultsEl.innerHTML = '<div class="empty-state"><div class="spinner"></div><p>Running ML inference...</p></div>';
+
+    let allResults = [];
+
+    for (let i = 0; i < input.files.length; i++) {
+        const file = input.files[i];
+        const formData = new FormData();
+        const isVideo = file.type.startsWith('video/');
+        
+        formData.append(isVideo ? 'video' : 'image', file);
+
+        try {
+            const endpoint = isVideo ? `/api/detect/video?conf=${conf}&frame_skip=5` : `/detect?conf=${conf}`;
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                toast(`Failed: ${err.detail || res.statusText}`, 'error');
+                continue;
+            }
+            const data = await res.json();
+            // Video endpoint returns frames_processed, total_frames, etc.
+            if (isVideo) {
+                allResults.push({ file: file.name, count: data.detections.length, ...data });
+            } else {
+                allResults.push({ file: file.name, ...data });
+            }
+        } catch(e) {
+            console.error('Upload error:', e);
+            toast(`Error processing ${file.name}`, 'error');
+        }
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Detect Diseases';
+
+    if (allResults.length === 0) {
+        resultsEl.innerHTML = '<div class="empty-state"><p>No results.</p></div>';
+        return;
+    }
+
+    // Render results
+    let html = '';
+    for (const result of allResults) {
+        html += `<div class="upload-result-file">
+            <div class="upload-result-header">
+                <span class="upload-filename">${result.file}</span>
+                <span class="badge badge-${result.count > 0 ? 'approved' : 'pending'}">${result.count} detection${result.count !== 1 ? 's' : ''}</span>
+            </div>`;
+            
+        if (result.frames_processed) {
+            html += `<div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px; padding-left: 12px;">Processed ${result.frames_processed} frames out of ${result.total_frames} (Skipping 5)</div>`;
+        }
+
+        if (result.detections.length > 0) {
+            for (const det of result.detections) {
+                const confClass = det.confidence > 0.8 ? 'high' : det.confidence > 0.6 ? 'medium' : 'low';
+                html += `
+                    <div class="upload-det-row">
+                        <span class="legend-dot ${det.class_name}"></span>
+                        <span>${DISEASE_LABELS[det.class_name] || det.class_name} ${det.frame ? `(Frame ${det.frame})` : ''}</span>
+                        <span class="detection-conf ${confClass}">${(det.confidence * 100).toFixed(1)}%</span>
+                        <span class="upload-bbox">[${det.bbox.map(v => v.toFixed(0)).join(', ')}]</span>
+                    </div>`;
+            }
+        } else {
+            html += '<div class="upload-det-empty">No leaf detected in frame</div>';
+        }
+        html += '</div>';
+    }
+
+    resultsEl.innerHTML = html;
+    toast(`Processed ${allResults.length} file(s)`, 'success');
+}
+
+// ══════════════════════════════════════════
+// LIVE STREAM DETECTION
+// ══════════════════════════════════════════
+
+let _streamWs = null;
+let _streamActive = false;
+let _streamFeedTimer = null;
+let _streamTotalDetections = 0;
+const _streamDetHistory = [];   // last N detection events
+const STREAM_DET_HISTORY_MAX = 50;
+
+function openStreamModal() {
+    document.getElementById('streamModal').classList.add('visible');
+    // If stream is active, start live feed display
+    _pollStreamStatus();
+}
+
+function closeStreamModal() {
+    document.getElementById('streamModal').classList.remove('visible');
+    _stopFeedRefresh();
+}
+
+async function toggleStream() {
+    const btn = document.getElementById('streamConnectBtn');
+    if (_streamActive) {
+        // Stop stream
+        btn.disabled = true;
+        btn.innerHTML = '<div class="spinner"></div> Stopping...';
+        try {
+            await fetch('/api/stream/stop', { method: 'POST' });
+            toast('Stream stopped', 'info');
+        } catch(e) {
+            toast('Failed to stop stream', 'error');
+        }
+        _onStreamStopped();
+        btn.disabled = false;
+    } else {
+        // Start stream
+        const url = document.getElementById('streamUrl').value.trim();
+        if (!url) {
+            toast('Enter a stream URL', 'error');
+            return;
+        }
+        const conf = parseFloat(document.getElementById('streamConf').value) || 0.6;
+        const skip = parseInt(document.getElementById('streamSkip').value) || 5;
+
+        btn.disabled = true;
+        btn.innerHTML = '<div class="spinner"></div> Connecting...';
+        try {
+            const res = await fetch('/api/stream/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stream_url: url,
+                    frame_skip: skip,
+                    conf_threshold: conf,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                toast(`Stream error: ${data.detail || res.statusText}`, 'error');
+                btn.disabled = false;
+                _updateConnectBtn(false);
+                return;
+            }
+            toast('Stream connected \u2014 YOLO inference running', 'success');
+            _onStreamStarted();
+        } catch(e) {
+            toast('Failed to connect stream', 'error');
+            btn.disabled = false;
+            _updateConnectBtn(false);
+        }
+    }
+}
+
+function _onStreamStarted() {
+    _streamActive = true;
+    _streamTotalDetections = 0;
+    _streamDetHistory.length = 0;
+    _updateConnectBtn(true);
+    _updateStatusBadge(true);
+    document.getElementById('streamVideoOverlay').style.display = 'none';
+    document.getElementById('streamStatsOverlay').style.display = 'flex';
+    document.getElementById('snapshotBtn').disabled = false;
+    document.getElementById('streamDetLog').innerHTML =
+        '<div class="empty-state" style="padding:16px;"><p>Waiting for detections...</p></div>';
+
+    _startFeedRefresh();
+    _connectStreamWS();
+}
+
+function _onStreamStopped() {
+    _streamActive = false;
+    _updateConnectBtn(false);
+    _updateStatusBadge(false);
+    document.getElementById('streamVideoOverlay').style.display = 'flex';
+    document.getElementById('streamStatsOverlay').style.display = 'none';
+    document.getElementById('snapshotBtn').disabled = true;
+    _stopFeedRefresh();
+    _disconnectStreamWS();
+}
+
+function _updateConnectBtn(isActive) {
+    const btn = document.getElementById('streamConnectBtn');
+    btn.disabled = false;
+    if (isActive) {
+        btn.className = 'btn btn-danger';
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Disconnect';
+    } else {
+        btn.className = 'btn btn-primary';
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Connect';
+    }
+}
+
+function _updateStatusBadge(isActive) {
+    const badge = document.getElementById('streamStatusBadge');
+    if (isActive) {
+        badge.textContent = 'LIVE';
+        badge.className = 'stream-status-badge live';
+    } else {
+        badge.textContent = 'OFFLINE';
+        badge.className = 'stream-status-badge';
+    }
+}
+
+// ── Video Feed Refresh (polling JPEG frames) ──
+
+function _startFeedRefresh() {
+    _stopFeedRefresh();
+    const img = document.getElementById('streamVideoFeed');
+    let frameSeq = 0;
+    _streamFeedTimer = setInterval(() => {
+        if (!_streamActive) return;
+        // Cache-bust with timestamp to force reload
+        img.src = `/api/stream/frame?annotated=true&_t=${Date.now()}_${frameSeq++}`;
+    }, 200);  // 5 FPS refresh for the displayed video
+}
+
+function _stopFeedRefresh() {
+    if (_streamFeedTimer) {
+        clearInterval(_streamFeedTimer);
+        _streamFeedTimer = null;
+    }
+}
+
+// ── WebSocket Consumer ──
+
+function _connectStreamWS() {
+    _disconnectStreamWS();
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _streamWs = new WebSocket(`${proto}//${location.host}/ws/stream-detect`);
+
+    _streamWs.onopen = () => {
+        console.log('[Stream WS] Connected');
+    };
+
+    _streamWs.onmessage = (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'stream_detection') {
+                _handleStreamDetection(msg);
+            } else if (msg.type === 'stream_status') {
+                _handleStreamStatus(msg.data);
+            } else if (msg.type === 'stream_stopped') {
+                _onStreamStopped();
+            }
+        } catch(e) {
+            console.error('[Stream WS] Parse error:', e);
+        }
+    };
+
+    _streamWs.onclose = () => {
+        console.log('[Stream WS] Disconnected');
+    };
+
+    _streamWs.onerror = (e) => {
+        console.error('[Stream WS] Error:', e);
+    };
+}
+
+function _disconnectStreamWS() {
+    if (_streamWs) {
+        _streamWs.close();
+        _streamWs = null;
+    }
+}
+
+function _handleStreamDetection(msg) {
+    const dets = msg.detections || [];
+    _streamTotalDetections += dets.length;
+
+    // Update stats overlay
+    document.getElementById('streamDetCount').textContent = _streamTotalDetections;
+
+    // Add to history
+    _streamDetHistory.unshift({
+        frame_id: msg.frame_id,
+        timestamp: msg.timestamp,
+        detections: dets,
+    });
+    if (_streamDetHistory.length > STREAM_DET_HISTORY_MAX) {
+        _streamDetHistory.length = STREAM_DET_HISTORY_MAX;
+    }
+
+    // Render detection log
+    _renderStreamDetLog();
+}
+
+function _handleStreamStatus(data) {
+    document.getElementById('streamFps').textContent = data.fps || '0';
+    document.getElementById('streamFrameCount').textContent = data.frame_count || '0';
+    document.getElementById('streamProcCount').textContent = data.processed_count || '0';
+
+    if (data.active && !_streamActive) {
+        _onStreamStarted();
+    }
+}
+
+function _renderStreamDetLog() {
+    const container = document.getElementById('streamDetLog');
+
+    if (_streamDetHistory.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:16px;"><p>Waiting for detections...</p></div>';
+        return;
+    }
+
+    let html = '';
+    // Show latest 15 detection events
+    const shown = _streamDetHistory.slice(0, 15);
+    for (const event of shown) {
+        const timeStr = new Date(event.timestamp * 1000).toLocaleTimeString();
+        html += `<div class="stream-det-event">`;
+        html += `<div class="stream-det-event-header"><span class="stream-det-frame">Frame #${event.frame_id}</span><span class="stream-det-time">${timeStr}</span></div>`;
+
+        if (event.detections.length === 0) {
+            html += '<div class="upload-det-empty">No leaf detected in frame</div></div>';
+            continue;
+        }
+
+        for (const det of event.detections) {
+            const confClass = det.confidence > 0.8 ? 'high' : det.confidence > 0.6 ? 'medium' : 'low';
+            html += `<div class="upload-det-row">
+                <span class="legend-dot ${det.class_name}"></span>
+                <span>${DISEASE_LABELS[det.class_name] || det.class_name}</span>
+                <span class="detection-conf ${confClass}">${(det.confidence * 100).toFixed(1)}%</span>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+// ── Slider Live Updates (push via WS) ──
+
+document.addEventListener('DOMContentLoaded', () => {
+    const confSlider = document.getElementById('streamConf');
+    const confVal = document.getElementById('streamConfValue');
+    const skipSlider = document.getElementById('streamSkip');
+    const skipVal = document.getElementById('streamSkipValue');
+
+    if (confSlider) {
+        confSlider.addEventListener('input', () => {
+            confVal.textContent = parseFloat(confSlider.value).toFixed(2);
+        });
+        confSlider.addEventListener('change', () => {
+            if (_streamWs && _streamWs.readyState === WebSocket.OPEN) {
+                _streamWs.send(JSON.stringify({
+                    type: 'update_settings',
+                    conf_threshold: parseFloat(confSlider.value),
+                }));
+            }
+        });
+    }
+
+    if (skipSlider) {
+        skipSlider.addEventListener('input', () => {
+            skipVal.textContent = skipSlider.value;
+        });
+        skipSlider.addEventListener('change', () => {
+            if (_streamWs && _streamWs.readyState === WebSocket.OPEN) {
+                _streamWs.send(JSON.stringify({
+                    type: 'update_settings',
+                    frame_skip: parseInt(skipSlider.value),
+                }));
+            }
+        });
+    }
+});
+
+// ── Snapshot ──
+
+async function captureSnapshot() {
+    try {
+        const res = await fetch('/api/stream/snapshot', { method: 'POST' });
+        const data = await res.json();
+        toast(`Snapshot saved: ${data.count} detection(s)`, 'success');
+    } catch(e) {
+        toast('Snapshot failed', 'error');
+    }
+}
+
+// ── Poll stream status on modal open ──
+
+async function _pollStreamStatus() {
+    try {
+        const res = await fetch('/api/stream/status');
+        const data = await res.json();
+        if (data.active) {
+            _onStreamStarted();
+            _handleStreamStatus(data);
+            document.getElementById('streamUrl').value = data.stream_url || '';
+            document.getElementById('streamConf').value = data.conf_threshold || 0.6;
+            document.getElementById('streamConfValue').textContent = (data.conf_threshold || 0.6).toFixed(2);
+            document.getElementById('streamSkip').value = data.frame_skip || 5;
+            document.getElementById('streamSkipValue').textContent = data.frame_skip || 5;
+        }
+    } catch(e) {
+        // Stream status endpoint not available, that's fine
+    }
+}

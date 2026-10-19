@@ -6,11 +6,15 @@ data: configs/dataset.yaml
 # Training hyperparameters
 epochs: 100
 imgsz: 640
-batch: 16
+batch: 8
 patience: 15
 
 # Device: auto (detect best available), mps (Apple Silicon), 0 (CUDA GPU), or cpu
 device: auto
+
+# Performance (IMPORTANT for Windows)
+workers: 2        # 🔽 reduce memory pressure
+cache: false      # avoid RAM overload
 
 # Output
 project: models
@@ -28,10 +32,9 @@ weight_decay: 0.0005
 hsv_h: 0.015
 hsv_s: 0.7
 hsv_v: 0.4
-degrees: 15.0
+degrees: 10.0
 translate: 0.1
 scale: 0.5
 fliplr: 0.5
-flipud: 0.2
-mosaic: 1.0
-mixup: 0.1
+flipud: 0.1       
+.

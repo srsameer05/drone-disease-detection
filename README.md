@@ -2,7 +2,7 @@
 
 A two-drone precision agriculture system for automated crop disease detection and targeted treatment. A **Scout Drone** surveys fields and captures geotagged images; a **Treatment Drone** applies treatment only where disease is detected.
 
-**Status:** Proof of Concept — software pipeline complete (v0.2). ML training and field hardware pending.
+**Status:** Active Development (v0.3) — Full ML inference pipeline, real-time live video streaming, and MAVLink telemetry synchronization complete. Hardware integration pending.
 
 ## Project Structure
 
@@ -201,8 +201,8 @@ Then open `http://localhost:8000`. Use **Load Demo Data** to populate, or **New 
 
 **Drone Connection:**
 - Click the **Scout** or **Treatment** indicators in the header to open the connect modal
-- Supports MAVLink over UDP (SITL), TCP (WiFi), or Serial
-- Real drone telemetry takes precedence over the simulator when connected
+- Supports MAVLink over UDP (e.g. Mission Planner SITL forwarding on `127.0.0.1:14551`), TCP (WiFi), or Serial
+- Real drone telemetry automatically overrides the simulator and pushes live GPS to the map and HUD
 
 **Map Layers:**
 - Toggle detections, spray zones, health heatmap, flight path, drone trail independently
@@ -217,6 +217,10 @@ Then open `http://localhost:8000`. Use **Load Demo Data** to populate, or **New 
 - Disease distribution chart in sidebar
 - Animated stat cards with counter rollups
 - Animated dashed flight path polyline
+
+**Machine Learning & Inference Integrations:**
+- **Upload & Detect:** Upload images or videos (`.mp4`) to run batch YOLO inference with dynamic confidence thresholding and area-based noise filtering.
+- **Live Stream Detection:** Connect to a live MJPG feed or local webcam (URL `0`) to process and display real-time bounding boxes via WebSockets, with configurable FPS limiters and thresholds.
 
 ### API Endpoints
 
@@ -244,6 +248,13 @@ Then open `http://localhost:8000`. Use **Load Demo Data** to populate, or **New 
 | GET | `/api/telemetry` | Latest telemetry snapshot (real or simulated) |
 | WS | `/ws/telemetry` | Live telemetry + event broadcast |
 | POST | `/api/simulator/stop` | Stop the telemetry simulator |
+| **Live Video & Image Processing** | | |
+| POST | `/detect` | Upload image for detection |
+| POST | `/api/detect/video` | Upload video for detection (frame sampling + aggregation) |
+| POST | `/api/stream/start` | Start live MJPG stream / webcam YOLO detection |
+| POST | `/api/stream/stop` | Stop live stream |
+| GET | `/api/stream/frame` | Pull latest annotated JPEG frame |
+| WS | `/ws/stream-detect` | Live broadcast of stream detection results & stats |
 | **Data** | | |
 | GET / POST | `/api/detections` | List / add detections |
 | GET / POST / PUT | `/api/spray-zones` | List / add / approve-reject zones |
@@ -274,7 +285,7 @@ sim_vehicle.py -v ArduCopter --console
 
 ## Architecture
 
-See [architecture.md](architecture.md) for the full system design, hardware recommendations, data flow, and budget breakdown.
+See `architecture.md` for the full system design, hardware recommendations, data flow, and budget breakdown.
 
 ### End-to-End Flow
 

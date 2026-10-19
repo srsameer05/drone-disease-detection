@@ -50,3 +50,10 @@ wandb/
 # Temp files
 tmp/
 *.tmp
+cam_test_*.jpg
+
+# Runtime uploads & snapshots
+dashboard/snapshots/*
+!dashboard/snapshots/.gitkeep
+dashboard/uploads/*
+!dashboard/uploads/.gitkeep
